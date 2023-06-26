@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
 
 import logging
+import json
+import pickle
+import threading
+import base64
 from datetime import timedelta
 from os.path import join, abspath, dirname
 
@@ -75,12 +79,28 @@ class ChatBot:
         if not self.debug:
             self.logger.warning('Serving on http://{}:{}'.format(host, port))
 
+        self.logger.warning('333')
+        try:
+            self.logger.warning('首次加载start')
+            with open('/data/user_items.pkl', 'rb') as f:
+                self.user_items = pickle.load(f)
+        except FileNotFoundError:
+            self.logger.warning('No existing file found. A new file will be created.')
+        self.logger.warning('首次加载end')
+        self.logger.warning('2222')
+        # self.user_items = {'user123': ['1de4e8af-846e-4c9d-b660-bf069d5e6a67', 'a744d303-034d-4bbd-be62-395767a32d64']}
+        self.timer = threading.Timer(5.0, self.save_user_items)
+        self.timer.start()
+
+
+        self.logger.warning('444')
+
         WSGIRequestHandler.protocol_version = 'HTTP/1.1'
         serve(app, host=host, port=port, ident=None, threads=threads)
 
     @staticmethod
     def __after_request(resp):
-        resp.headers['X-Server'] = 'pandora/{}'.format(__version__)
+        resp.headers['X-Server'] = 'dashao_m/{}'.format(__version__)
 
         return resp
 
@@ -116,7 +136,8 @@ class ChatBot:
 
         token_key = request.args.get('token')
         rendered = render_template('chat.html',
-                                   pandora_base=request.url_root.strip('/'),
+                                   # pandora_base=request.url_root.strip('/'),
+                                   pandora_base='http://gtp4.artifit.cn:9990',
                                    pandora_sentry=self.sentry,
                                    query=query
                                    )
@@ -197,11 +218,84 @@ class ChatBot:
     def list_models(self):
         return self.__proxy_result(self.chatgpt.list_models(True, self.__get_token_key()))
 
+    user_items = {'user123': ['1de4e8af-846e-4c9d-b660-bf069d5e6a67', 'a744d303-034d-4bbd-be62-395767a32d64']}
+    timer = None
+
+    def save_user_items(self):
+        # self.logger.warning('开始保存start')
+        with open('/data/user_items.pkl', 'wb') as f:
+            pickle.dump(self.user_items, f)
+
+        # 设置下一次调用
+        self.timer = threading.Timer(30.0, self.save_user_items)
+        self.timer.start()
+        # self.logger.warning('开始保存end')
+
+    # def load_user_items(self):
+    #     try:
+    #         self.logger.warning('首次加载start')
+    #         with open('/opt/user_items.pkl', 'rb') as f:
+    #             self.user_items = pickle.load(f)
+    #     except FileNotFoundError:
+    #         self.logger.warning('No existing file found. A new file will be created.')
+    #     self.logger.warning('首次加载end')
+
     def list_conversations(self):
+        user_id = 'user123'
+        # auth_header = request.headers.get('Authorization')
+        self.logger.warning(request.method)
+        self.logger.warning(request.args)
+        self.logger.warning(request.form)
+        self.logger.warning(request.data)
+        self.logger.warning(request.cookies)
+        self.logger.warning(request.headers.get('User-Agent'))
+        self.logger.warning(request.cookies)
+        self.logger.warning(request.headers.get(request.headers.get('X-Use-Token', request.cookies.get('token-key'))))
+        auth = request.authorization
+        if auth is not None:
+            self.logger.warning('Hello, {}!'.format(auth.username))
+            user_id = auth.username
+        else:
+            self.logger.warning('null')
+        # auth_info = base64.b64decode(auth_header[6:]).decode('utf-8')
+        # username, password = auth_info.split(':', 1)
+        # self.logger.warning('username:'+username)
+        # self.logger.warning('password:'+password)
+
+        if user_id in self.user_items:
+            self.logger.warning(self.user_items[user_id])
+        else:
+            self.logger.warning(f'User ID {user_id} not found.')
+
         offset = request.args.get('offset', '0')
         limit = request.args.get('limit', '20')
+        result = self.__proxy_result(self.chatgpt.list_conversations(offset, limit, True, self.__get_token_key()))
+        # self.logger.warning(result.data)
+        json_string = result.data.decode('utf-8')
+        # self.logger.warning(json_string)
+        data_dict = json.loads(json_string)
+        # self.logger.warning(data_dict.items())
+        # 从所有items里移除id不在'user123'的id里的items
+        filtered_items = [item for item in data_dict['items'] if
+                          (item['id'] in self.user_items.get(user_id, []) or item['title'] == 'New chat')]
+        newChat_matching_ids = [item['id'] for item in data_dict['items'] if (item['title'] == 'New chat')]
 
-        return self.__proxy_result(self.chatgpt.list_conversations(offset, limit, True, self.__get_token_key()))
+        # 添加到user123的user_items列表中
+        if user_id in self.user_items:
+            self.user_items[user_id].extend(newChat_matching_ids)
+        else:
+            self.user_items[user_id] = newChat_matching_ids
+
+        data_dict['items'] = filtered_items
+        # self.logger.warning(result.data)
+        # self.save_user_items
+        # self.logger.warning(result.data)
+        # 转换为JSON字符串
+        data_dict_json_string = json.dumps(data_dict)
+
+        # 转换为bytes对象
+        result.data = data_dict_json_string.encode('utf-8')
+        return result
 
     def get_conversation(self, conversation_id):
         return self.__proxy_result(self.chatgpt.get_conversation(conversation_id, True, self.__get_token_key()))
